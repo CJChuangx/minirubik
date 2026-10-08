@@ -40,9 +40,27 @@ static const uint8_t twist[3][CUBIES] = {
 };
 
 //new
+typedef struct {
+    uint16_t p;
+    uint16_t o;
+    uint8_t depth;
+    uint8_t next_face;
+    uint8_t next_turn;
+    int8_t previous_face;
+} frame_t;
+static frame_t stack[12];
+//new
 static uint16_t permutation[3][PERMUTATIONS];
 static uint16_t orientation[3][ORIENTATIONS];
-
+static uint8_t orientation_distance[ORIENTATIONS];
+static uint8_t permutation_distance[PERMUTATIONS];
+static uint64_t expanded_nodes = 0;
+static uint8_t path[12];
+static const char *move_name[9] = {
+    "R", "R2", "R'",
+    "B", "B2", "B'",
+    "D", "D2", "D'"
+};
 /* The three quarter-turns preserve the fixed front-upper-left corner. */
 /*@ requires face < 3;
     assigns \nothing;
@@ -219,35 +237,115 @@ static void build_transition_tables(void)
         }
     }
 }
+static void build_orientation_distance(void)
+{
+    uint16_t queue[ORIENTATIONS];
+
+    uint16_t head = 0;
+    uint16_t tail = 1;
+
+    memset(orientation_distance,
+           UINT8_MAX,
+           sizeof orientation_distance);
+
+    /* solved orientation */
+    orientation_distance[0] = 0;
+    queue[0] = 0;
+
+    while (head < tail) {
+        uint16_t here = queue[head++];
+
+        for (uint8_t face = 0; face < 3; ++face) {
+            uint16_t next_o = here;
+
+            for (uint8_t turn = 0; turn < 3; ++turn) {
+                next_o = orientation[face][next_o];
+
+                if (orientation_distance[next_o] == UINT8_MAX) {
+
+			orientation_distance[next_o] = orientation_distance[here] + 1;
+
+			queue[tail++] = next_o;
+                }
+            }
+        }
+    }
+
+    /*
+     * Debug / verification
+     */
+    uint16_t visited = 0;
+    uint8_t max_distance = 0;
+
+    for (uint16_t i = 0; i < ORIENTATIONS; ++i) {
+        if (orientation_distance[i] != UINT8_MAX) {
+            ++visited;
+
+            if (orientation_distance[i] > max_distance)
+                max_distance = orientation_distance[i];
+        }
+    }
+
+    printf("orientation states: %u\n", visited);
+    printf("max orientation distance: %u\n", max_distance);
+}
+static void build_permutation_distance(void){
+    uint16_t queue[PERMUTATIONS];
+    uint16_t head = 0;
+    uint16_t tail = 1;
+
+    memset(permutation_distance,UINT8_MAX,sizeof permutation_distance);
+
+    permutation_distance[0] = 0;	
+    queue[0] = 0;
+
+    while (head < tail) {
+    	uint16_t here = queue[head++];
+
+    	    for (uint8_t face = 0; face < 3; ++face) {
+    		uint16_t next_p = here;
+
+    		for (uint8_t turn = 0; turn < 3; ++turn) {
+    	    	    next_p = permutation[face][next_p];
+
+    	    	    if (permutation_distance[next_p] == UINT8_MAX) {
+                	/* Like orientation BFS ：
+                	   child distance = parent distance + 1
+                	   enqueue child
+                	*/
+			permutation_distance[next_p] = permutation_distance[here] + 1;
+
+    			queue[tail++] = next_p;
+    	    	    }
+        	}
+    	    }
+    }
+    uint16_t visited = 0;
+    uint8_t max_distance = 0;
+
+    for (uint16_t i = 0; i < PERMUTATIONS; ++i) {
+    	if (permutation_distance[i] != UINT8_MAX) {
+            ++visited;
+
+            if (permutation_distance[i] > max_distance)
+            	max_distance = permutation_distance[i];
+    	}
+    }
+
+    printf("permutation states: %u\n", visited);
+    printf("max permutation distance: %u\n", max_distance);
+}
 
 static uint8_t *build_table(uint8_t *diameter)
 {
     uint8_t *toward_solved = malloc(STATES);
     uint32_t *queue = malloc((size_t) STATES * sizeof *queue);
-    //uint16_t permutation[3][PERMUTATIONS], orientation[3][ORIENTATIONS];
     uint32_t head = 0, tail = 1, level_end = 1;
-    //state_t state;
     if (!toward_solved || !queue) {
         free(toward_solved);
         free(queue);
         return NULL;
     }
-    /*for (uint16_t rank = 0; rank < PERMUTATIONS; ++rank) {
-        unrank_state((uint32_t) rank * ORIENTATIONS, &state);
-        for (uint8_t face = 0; face < 3; ++face) {
-            state_t next = quarter_turn(state, face);
-            permutation[face][rank] =
-                (uint16_t) (rank_state(&next) / ORIENTATIONS);
-        }
-    }
-    for (uint16_t rank = 0; rank < ORIENTATIONS; ++rank) {
-        unrank_state(rank, &state);
-        for (uint8_t face = 0; face < 3; ++face) {
-            state_t next = quarter_turn(state, face);
-            orientation[face][rank] =
-                (uint16_t) (rank_state(&next) % ORIENTATIONS);
-        }
-    }*/
     memset(toward_solved, UINT8_MAX, STATES);
     queue[0] = 0;
     toward_solved[0] = 0;
@@ -349,11 +447,104 @@ static int self_test(void)
     return 1;
 }
 
+//new
+static int dfs_stack(
+    uint16_t start_p,
+    uint16_t start_o,
+    int limit,
+    int *solution_depth)
+{
+    int top = 0;
+
+    stack[0].p = start_p;
+    stack[0].o = start_o;
+    stack[0].depth = 0;
+    stack[0].next_face = 0;
+    stack[0].next_turn = 0;
+    stack[0].previous_face = -1;
+
+    expanded_nodes = 0;
+
+    while (top >= 0) {
+    frame_t *f = &stack[top];
+
+    if (f->p == 0 && f->o == 0) {
+    *solution_depth = f->depth;
+    return 1;
+}
+
+    uint8_t h = permutation_distance[f->p];
+
+    if (f->depth + h > limit) {
+        --top;
+        continue;
+    }
+
+    if (f->next_face == 0 && f->next_turn == 0) {
+    	++expanded_nodes;
+    }
+
+    if (f->next_face >= 3) {
+        --top;
+        continue;
+    }
+
+    if (f->next_face == f->previous_face) {
+        ++f->next_face;
+        f->next_turn = 0;
+        continue;
+    }
+
+    uint8_t face = f->next_face;
+    uint8_t turn = f->next_turn;
+
+    uint16_t next_p = f->p;
+    uint16_t next_o = f->o;
+
+    for (uint8_t i = 0; i <= turn; ++i) {
+        next_p = permutation[face][next_p];
+        next_o = orientation[face][next_o];
+    }
+
+    path[f->depth] = face * 3 + turn;
+
+    ++f->next_turn;
+
+    if (f->next_turn >= 3) {
+        f->next_turn = 0;
+        ++f->next_face;
+    }
+
+    ++top;
+
+    stack[top].p = next_p;
+    stack[top].o = next_o;
+    stack[top].depth = f->depth + 1;
+    stack[top].next_face = 0;
+    stack[top].next_turn = 0;
+    stack[top].previous_face = face;
+}
+    return 0;
+}
+
+//new
+static int verify_path(state_t start, int length)
+{
+    state_t s = start;
+
+    for (int i = 0; i < length; ++i)
+        s = apply_move(s, path[i]);
+
+    return rank_state(&s) == 0;
+}
+
 int main(int argc, char **argv)
 {
     state_t state;
     uint8_t diameter;
     build_transition_tables();
+    build_orientation_distance();
+    build_permutation_distance();
     if (argc == 2 && !strcmp(argv[1], "--self-test")) {
         if (!self_test()) {
             fputs("self-test failed\n", stderr);
@@ -378,19 +569,51 @@ int main(int argc, char **argv)
                 argc > 0 && argv[0] ? argv[0] : "solver");
         return 2;
     }
-    uint8_t *table = build_table(&diameter);
-    if (!table) {
-        fputs("could not build complete state table\n", stderr);
-        return 1;
+
+    //new
+    uint32_t rank = rank_state(&state);
+
+    uint16_t p = (uint16_t)(rank / ORIENTATIONS);
+    uint16_t o = (uint16_t)(rank % ORIENTATIONS);
+
+    int found = 0;
+    int solution_depth = -1;
+
+    int start_limit = permutation_distance[p];
+
+    for (int limit = start_limit; limit <= 11; ++limit) {
+
+    	expanded_nodes = 0;
+	solution_depth = -1;
+
+    	found = dfs_stack(p,o,limit,&solution_depth);
+
+    	printf("stack limit %d: found=%d expanded=%llu\n",
+           limit,
+           found,
+           (unsigned long long)expanded_nodes);
+
+    	if (found)
+            break;
     }
-    const char *separator = "";
-    for (uint32_t rank = rank_state(&state); rank; rank = rank_state(&state)) {
-        uint8_t move = table[rank];
-        printf("%s%s", separator, move_names[move]);
-        separator = " ";
-        state = apply_move(state, move);
-    }
-    putchar('\n');
-    free(table);
+
+
+
+
+printf("expanded nodes: %llu\n",
+       (unsigned long long)expanded_nodes);
+
+if (found) {
+    printf("solution depth: %d\n", solution_depth);
+    printf("solution: ");
+
+    for (int i = 0; i < solution_depth; ++i)
+     	printf("%s ", move_name[path[i]]);
+
+    printf("\n");
+    printf("verify: %s\n",
+    verify_path(state, solution_depth) ? "OK" : "FAIL");
+}
+
     return output_failed();
 }
