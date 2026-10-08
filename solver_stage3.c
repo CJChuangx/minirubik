@@ -621,14 +621,128 @@ static int verify_path(state_t start, int length)
 
     return rank_state(&s) == 0;
 }
+static int export_tables(const char *filename)
+{
+    FILE *fp = fopen(filename, "w");
+
+    if (!fp) {
+        perror("fopen");
+        return 0;
+    }
+
+    fprintf(fp, ".data\n");
+    fprintf(fp, ".align 2\n\n");
+
+    /* permutation[3][5040] */
+    fprintf(fp, ".globl permutation_table\n");
+    fprintf(fp, "permutation_table:\n");
+
+    for (int face = 0; face < 3; ++face) {
+        for (int i = 0; i < PERMUTATIONS; ++i) {
+            if (i % 16 == 0)
+                fprintf(fp, "    .half ");
+
+            fprintf(fp, "%u", permutation[face][i]);
+
+            if (i % 16 == 15 || i == PERMUTATIONS - 1)
+                fprintf(fp, "\n");
+            else
+                fprintf(fp, ", ");
+        }
+    }
+
+    fprintf(fp, "\n");
+
+    /* orientation[3][729] */
+    fprintf(fp, ".globl orientation_table\n");
+    fprintf(fp, "orientation_table:\n");
+
+    for (int face = 0; face < 3; ++face) {
+        for (int i = 0; i < ORIENTATIONS; ++i) {
+            if (i % 16 == 0)
+                fprintf(fp, "    .half ");
+
+            fprintf(fp, "%u", orientation[face][i]);
+
+            if (i % 16 == 15 || i == ORIENTATIONS - 1)
+                fprintf(fp, "\n");
+            else
+                fprintf(fp, ", ");
+        }
+    }
+
+    fprintf(fp, "\n");
+
+    /* permutation_distance[5040] */
+    fprintf(fp, ".globl permutation_distance_table\n");
+    fprintf(fp, "permutation_distance_table:\n");
+
+    for (int i = 0; i < PERMUTATIONS; ++i) {
+        if (i % 16 == 0)
+            fprintf(fp, "    .byte ");
+
+        fprintf(fp, "%u", permutation_distance[i]);
+
+        if (i % 16 == 15 || i == PERMUTATIONS - 1)
+            fprintf(fp, "\n");
+        else
+            fprintf(fp, ", ");
+    }
+
+    fprintf(fp, "\n");
+
+    /* orientation_distance[729] */
+    fprintf(fp, ".globl orientation_distance_table\n");
+    fprintf(fp, "orientation_distance_table:\n");
+
+    for (int i = 0; i < ORIENTATIONS; ++i) {
+        if (i % 16 == 0)
+            fprintf(fp, "    .byte ");
+
+        fprintf(fp, "%u", orientation_distance[i]);
+
+        if (i % 16 == 15 || i == ORIENTATIONS - 1)
+            fprintf(fp, "\n");
+        else
+            fprintf(fp, ", ");
+    }
+
+    fclose(fp);
+    return 1;
+}
+
 
 int main(int argc, char **argv)
 {
     state_t state;
     uint8_t diameter;
     build_transition_tables();
+
+    state_t tmp = {
+    {0, 1, 2, 3, 4, 5, 6},
+    {0, 0, 0, 0, 0, 0, 0}
+};
+
+tmp = apply_move(tmp, 0);   /* R */
+
+printf("R orientation: ");
+
+for (int i = 0; i < 7; ++i)
+    printf("%u ", tmp.o[i]);
+
+printf("\n");
+
     build_orientation_distance();
     build_permutation_distance();
+    if (argc == 2 && !strcmp(argv[1], "--export-tables")) {
+    if (!export_tables("tables.s")) {
+        fputs("failed to export tables\n", stderr);
+        return 1;
+    }
+
+        puts("tables exported to tables.s");
+        return 0;
+    }
     if (argc == 2 && !strcmp(argv[1], "--self-test")) {
         if (!self_test()) {
             fputs("self-test failed\n", stderr);
